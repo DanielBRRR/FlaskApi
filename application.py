@@ -68,6 +68,68 @@ def login():
               type: string
             password:
               type: string
+          required:
+            - username
+            - password
+    responses:
+      200:
+        description: Token de acceso generado correctamente
+        schema:
+          type: object
+          properties:
+            access_token:
+              type: string
+      401:
+        description: Credenciales incorrectas
+        schema:
+          type: object
+          properties:
+            msg:
+              type: string
+              example: Bad username or password
+    """
+    mydb = myclient["Clinica"]
+    mycol = mydb["usuarios"]
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    username = data.get('username')
+    password = data.get('password')
+
+    if not isinstance(username, str) or not username.strip():
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    if not isinstance(password, str) or not password.strip():
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    user = mycol.find_one({"username": username})
+    if not user:
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    if bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
+        access_token = create_access_token(identity=str(username), additional_claims={"role": user.get("role", "user")})
+        return jsonify(access_token=access_token), 200
+    else:
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    """
+    Iniciar sesión en la aplicación
+    ---
+    tags:
+      - Autenticación
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            username:
+              type: string
+            password:
+              type: string
     responses:
       200:
         description: Token de acceso generado correctamente
@@ -77,26 +139,131 @@ def login():
     mydb = myclient["Clinica"]
     mycol = mydb["usuarios"]
 
-    username = request.json.get('username', None)
-    password = request.json.get('password', None)
-
-    print(username)
-    print(password)
-
-    if not username or not password:
+    # Extraer datos JSON
+    data = request.get_json()
+    if not data:
         return jsonify({"msg": "Bad username or password"}), 401
 
-    user = mycol.find_one({"username": username})
+    username = data.get('username')
+    password = data.get('password')
 
-    if user and bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
-        access_token = create_access_token(identity=username)
-        return jsonify(access_token=access_token)
+    # Validar que username y password sean strings no vacíos
+    if not isinstance(username, str) or not username.strip():
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    if not isinstance(password, str) or not password.strip():
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    # Buscar usuario en DB
+    user = mycol.find_one({"username": username})
+    if not user:
+        return jsonify({"msg": "Bad username or password"}), 401
+
+    # Verificar contraseña con bcrypt
+    if bcrypt.checkpw(password.encode('utf-8'), user['password'].encode('utf-8')):
+        # Forzar que identity sea string y crear token con rol
+        access_token = create_access_token(identity=str(username), additional_claims={"role": user.get("role", "user")})
+        return jsonify(access_token=access_token), 200
     else:
         return jsonify({"msg": "Bad username or password"}), 401
 
 
 @app.route("/register", methods=['POST'])
 def register():
+    """
+    Registrar un nuevo usuario
+    ---
+    tags:
+      - Autenticación
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            username:
+              type: string
+            password:
+              type: string
+            name:
+              type: string
+            lastname:
+              type: string
+            email:
+              type: string
+            phone:
+              type: string
+            date:
+              type: string
+              format: date
+              example: "25/12/2025"
+              description: Fecha de nacimiento en formato DD/MM/YYYY
+          required:
+            - username
+            - password
+            - date
+    responses:
+      200:
+        description: Usuario creado correctamente
+        schema:
+          type: object
+          properties:
+            msg:
+              type: string
+              example: user created
+      400:
+        description: Solicitud incorrecta o formato de fecha inválido
+        schema:
+          type: object
+          properties:
+            msg:
+              type: string
+              example: Bad request or Invalid date format
+    """
+    mydb = myclient["Clinica"]
+    mycol = mydb["usuarios"]
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"msg": "Bad request"}), 400
+
+    username = data.get('username')
+    password = data.get('password')
+    name = data.get('name')
+    lastname = data.get('lastname')
+    email = data.get('email')
+    phone = data.get('phone')
+    date = data.get('date')
+    role = data.get('role', 'user')  # Por defecto "user"
+
+    if not username or not password or not date:
+        return jsonify({"msg": "Bad request"}), 400
+
+    try:
+        datetime.strptime(date, '%d/%m/%Y')
+    except ValueError:
+        return jsonify({"msg": "Invalid date format"}), 400
+
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+    user = {
+        "username": username,
+        "password": hashed_password,
+        "name": name,
+        "lastname": lastname,
+        "email": email,
+        "phone": phone,
+        "date": date,
+        "role": role
+    }
+
+    if mycol.find_one({"username": username}):
+        return jsonify({"msg": "User already exists"}), 400
+
+    mycol.insert_one(user)
+    return jsonify({"msg": "user created"}), 200
+
     """
     Registrar un nuevo usuario
     ---
@@ -161,7 +328,8 @@ def register():
         "lastname": lastname,
         "email": email,
         "phone": phone,
-        "date": date
+        "date": date,
+        "role": role   # <-- Aquí añadí solo este campo
     }
     x = mycol.insert_one(user)
 
@@ -170,7 +338,7 @@ def register():
 
 @app.route("/centers", methods=['GET'])
 @jwt_required()
-def center():
+def centers():
     """
     Obtiene una lista de todos los centros
     ---
@@ -178,8 +346,6 @@ def center():
       - Centros
     security:
       - Bearer: []
-    summary: Obtiene una lista de todos los centros
-    description: Devuelve una lista en formato JSON de todos los centros disponibles en la base de datos "Clinica".
     responses:
       200:
         description: Lista de centros
@@ -188,21 +354,18 @@ def center():
           items:
             type: object
             properties:
-              nombre:
+              name:
                 type: string
                 description: Nombre del centro
-              direccion:
+              address:
                 type: string
                 description: Dirección del centro
-              telefono:
-                type: string
-                description: Teléfono del centro
     """
-
     mydb = myclient["Clinica"]
     mycol = mydb["centros"]
     centers = mycol.find({}, {"_id": 0})
-    return jsonify(list(centers))
+    return jsonify(list(centers)), 200
+
 
 
 @app.route("/profile", methods=['GET'])
@@ -212,98 +375,107 @@ def profile():
     Obtiene el perfil del usuario actual
     ---
     tags:
-        - Perfil
+      - Perfil
     security:
-        - Bearer: []
-    summary: Obtiene el perfil del usuario actual
-    description: Devuelve la información del perfil del usuario autenticado en formato JSON.
+      - Bearer: []
     responses:
-        200:
-            description: Perfil del usuario
-            schema:
-                type: object
-                properties:
-                    username:
-                        type: string
-                        description: Nombre de usuario
-                    name:
-                        type: string
-                        description: Nombre del usuario
-                    lastname:
-                        type: string
-                        description: Apellido del usuario
-                    email:
-                        type: string
-                        description: Correo electrónico del usuario
-                    phone:
-                        type: string
-                        description: Teléfono del usuario
-                    date:
-                        type: string
-                        description: Fecha de nacimiento del usuario
-                        example: "25/12/2025"
+      200:
+        description: Perfil del usuario
+        schema:
+          type: object
+          properties:
+            username:
+              type: string
+            name:
+              type: string
+            lastname:
+              type: string
+            email:
+              type: string
+            phone:
+              type: string
+            date:
+              type: string
     """
     current_user = get_jwt_identity()
     mydb = myclient["Clinica"]
     mycol = mydb["usuarios"]
     user = mycol.find_one({"username": current_user}, {"_id": 0, "password": 0})
-    return jsonify(user)
+    if not user:
+        return jsonify({"msg": "User not found"}), 404
+    return jsonify(user), 200
+
 
 
 @app.route("/date/create", methods=['POST'])
 @jwt_required()
 def createDate():
-    
     """
     Crea una nueva cita en la base de datos.
     ---
     tags:
-        - Citas
+      - Citas
     security:
-        - Bearer: []
+      - Bearer: []
     parameters:
-        - name: body
-          in: body
-          required: true
-          schema:
-            type: object
-            properties:
-                center:
-                    type: string
-                    description: Nombre del centro, tiene que ser un nombre devuelto por la llamada /centers
-                    example: "Centro de Salud"
-                date:
-                    type: string
-                    description: Fecha de nacimiento en formato DD/MM/YYYY HH:00:00
-                    example: "25/12/2025 14:00:00"
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            center:
+              type: string
+              example: "Centro de Salud Madrid Norte"
+            date:
+              type: string
+              example: "25/12/2025 14:00:00"
+              description: Fecha y hora en formato DD/MM/YYYY HH:00:00
+          required:
+            - center
+            - date
     responses:
-        200:
-            description: Usuario creado correctamente
-        400:
-            description: Solicitud incorrecta o fecha ya reservada
+      200:
+        description: Cita creada exitosamente
+        schema:
+          type: object
+          properties:
+            msg:
+              type: string
+              example: Date created successfully
+      400:
+        description: Error en solicitud o fecha ya reservada
+        schema:
+          type: object
+          properties:
+            msg:
+              type: string
+              example: Center not found / Invalid date format / Date and hour already taken
     """
-
     current_user = get_jwt_identity()
     mydb = myclient["Clinica"]
     mycol = mydb["citas"]
     myCenters = mydb["centros"]
 
-    date = request.json.get('date', None)
-    center = request.json.get('center', None)
+    data = request.get_json()
+    center = data.get('center')
+    date_str = data.get('date')
+
+    if not center or not date_str:
+        return jsonify({"msg": "Bad request"}), 400
 
     existing_center = myCenters.find_one({"name": center})
     if not existing_center:
         return jsonify({"msg": "Center not found"}), 400
 
     try:
-        date = datetime.strptime(date, '%d/%m/%Y %H:00:00')
+        date = datetime.strptime(date_str, '%d/%m/%Y %H:00:00')
         day = date.strftime('%d/%m/%Y')
         hour = date.strftime('%H')
     except ValueError:
         return jsonify({"msg": "Invalid date format"}), 400
-    
 
-    existing_date = mycol.find_one({"day": day, "hour": hour})
+    existing_date = mycol.find_one({"day": day, "hour": hour, "center": center, "cancel": {"$ne": 1}})
     if existing_date:
         return jsonify({"msg": "Date and hour already taken"}), 400
 
@@ -312,57 +484,78 @@ def createDate():
         "day": day,
         "hour": hour,
         "created_at": datetime.now().strftime('%d/%m/%Y %H:%M:%S'),
-        "center": request.json.get('center', None)
+        "center": center,
+        "cancel": 0
     }
     mycol.insert_one(new_date)
-
     return jsonify({"msg": "Date created successfully"}), 200
+
 
 
 @app.route("/date/getByDay", methods=['POST'])
 @jwt_required()
-def getDatesByDay():
+def getDateByDay():
     """
-    Obtiene las citas por día.
+    Obtiene todas las citas para un día específico
     ---
     tags:
-        - Citas
+      - Citas
     security:
-        - Bearer: []
+      - Bearer: []
     parameters:
-        - name: day
-          in: body
-          type: string
-          required: true
-          description: El día para el cual se desean obtener las citas, entre 1 y 31.
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            day:
+              type: string
+              example: "25"
+              description: Día del mes en formato numérico (1-31)
+          required:
+            - day
     responses:
-        200:
-            description: Una lista de citas para el día especificado.
-            schema:
-                type: array
-                items:
-                    type: object
-                    properties:
-                        day:
-                            type: string
-                            description: El día de la cita.
-                        cancel:
-                            type: integer
-                            description: Estado de cancelación de la cita.
-        400:
-            description: Solicitud incorrecta, el parámetro 'day' es requerido.
+      200:
+        description: Lista de citas del día
+        schema:
+          type: array
+          items:
+            type: object
+            properties:
+              username:
+                type: string
+              day:
+                type: string
+              hour:
+                type: string
+              center:
+                type: string
+      400:
+        description: Solicitud incorrecta
+        schema:
+          type: object
+          properties:
+            msg:
+              type: string
     """
+    data = request.get_json()
+    day = data.get('day')
+    if not day:
+        return jsonify({"msg": "Bad request"}), 400
+
+    try:
+        day_int = int(day)
+        if day_int < 1 or day_int > 31:
+            return jsonify({"msg": "Bad request"}), 400
+    except (ValueError, TypeError):
+        return jsonify({"msg": "Bad request"}), 400
 
     mydb = myclient["Clinica"]
     mycol = mydb["citas"]
-    day = request.json.get('day', None)
 
-    if not day or (day > 31 or day < 1):
-        return jsonify({"msg": "Bad request"}), 400
-
-    dates = mycol.find({"day": day, "cancel": {"$ne": 1}}, {"_id": 0})
-    
-    return jsonify(format_dates(list(dates)))
+    dates = mycol.find({"day": {"$regex": f'^{day.zfill(2)}/'}, "cancel": 0}, {"_id": 0})
+    return jsonify(list(dates)), 200
 
 
 @app.route("/date/getByUser", methods=['GET'])
@@ -409,83 +602,72 @@ def getDateByUser():
 @jwt_required()
 def deleteDate():
     """
-    Cancela una cita existente
+    Cancela (marca como cancelada) una cita
     ---
     tags:
-        - Citas
-    summary: Cancela una cita existente
-    description: Permite a un usuario autenticado cancelar una cita existente en la base de datos.
+      - Citas
+    security:
+      - Bearer: []
     parameters:
-        - in: body
-          name: body
-          schema:
-            type: object
-            required:
-                - date
-                - center
-            properties:
-                date:
-                    type: string
-                    description: Fecha y hora de la cita en formato 'dd/mm/yyyy HH:00:00'
-                    example: "25/12/2025 14:00:00"
-                center:
-                    type: string
-                    description: Centro donde se realizará la cita
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            center:
+              type: string
+            date:
+              type: string
+              example: "25/12/2025 14:00:00"
+          required:
+            - center
+            - date
     responses:
-        200:
-            description: Cita eliminada exitosamente
-            schema:
-                type: object
-                properties:
-                    msg:
-                        type: string
-                        example: Date deleted successfully
-        400:
-            description: Formato de fecha inválido o cita no encontrada
-            schema:
-                type: object
-                properties:
-                    msg:
-                        type: string
-                        example: Invalid date format
-        401:
-            description: Usuario no autorizado para eliminar la cita
-            schema:
-                type: object
-                properties:
-                    msg:
-                        type: string
-                        example: Unauthorized
+      200:
+        description: Cita cancelada exitosamente
+        schema:
+          type: object
+          properties:
+            msg:
+              type: string
+              example: Date deleted successfully
+      400:
+        description: Error en solicitud o cita no encontrada
+        schema:
+          type: object
+          properties:
+            msg:
+              type: string
     """
-
-
     current_user = get_jwt_identity()
     mydb = myclient["Clinica"]
     mycol = mydb["citas"]
 
-    date = request.json.get('date', None)
-    center = request.json.get('center', None)
+    data = request.get_json()
+    center = data.get('center')
+    date_str = data.get('date')
+
+    if not center or not date_str:
+        return jsonify({"msg": "Bad request"}), 400
 
     try:
-        date = datetime.strptime(date, '%d/%m/%Y %H:00:00')
+        date = datetime.strptime(date_str, '%d/%m/%Y %H:00:00')
         day = date.strftime('%d/%m/%Y')
         hour = date.strftime('%H')
     except ValueError:
         return jsonify({"msg": "Invalid date format"}), 400
 
-    date = mycol.find_one({"day": day, "hour": hour, "center": center})
-    if not date:
-        return jsonify({"msg": "Date not found"}), 400
-
-    if date["username"] != current_user:
-        return jsonify({"msg": "Unauthorized"}), 401
-
-    mycol.update_one(
-        {"day": day, "hour": hour, "center": center},
+    result = mycol.update_one(
+        {"username": current_user, "day": day, "hour": hour, "center": center},
         {"$set": {"cancel": 1}}
     )
 
+    if result.matched_count == 0:
+        return jsonify({"msg": "Date not found"}), 400
+
     return jsonify({"msg": "Date deleted successfully"}), 200
+
 
 
 @app.route("/dates", methods=['GET'])
@@ -546,6 +728,85 @@ def migracion():
         return jsonify({"msg": "Database and collections created"}), 200
     else:
         return jsonify({"msg": "Database already exists"}), 200
+
+@app.route("/currentUser", methods=["PATCH"])
+@jwt_required()
+def patchCurrentuser():
+    """
+    Actualizar datos del usuario logeado
+    ---
+    tags:
+        - Perfil
+    parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+            properties:
+                name:
+                    type: string
+                lastname:
+                    type: string
+                email:
+                    type: string
+                phone:
+                    type: string
+                date:
+                    type: string
+                    format: date
+                    example: "25/12/2025"
+                    description: Fecha de nacimiento en formato DD/MM/YYYY
+    responses:
+        200:
+            description: Usuario creado correctamente
+        400:
+            description: Usuario no existe
+    """
+    current_user = get_jwt_identity()
+    mydb = myclient["Clinica"]
+    mycol = mydb["usuarios"]
+
+    name = request.json.get('name', None)
+    lastname = request.json.get('lastname', None)
+    email = request.json.get('email', None)
+    phone = request.json.get('phone', None)
+    date = request.json.get('date', None)
+
+    newData = {}
+
+    if name:
+        newData["name"] = name
+
+    if lastname:
+        newData["lastname"] = lastname
+
+    if email:
+        newData["email"] = email
+
+    if phone:
+        newData["phone"] = phone
+
+    if date:
+        try:
+            date = datetime.strptime(date, '%d/%m/%Y').strftime('%d/%m/%Y')
+        except ValueError:
+            return jsonify({"msg": "Invalid date format"}), 400
+
+        newData["date"] = date
+
+    print(current_user)
+
+    update_result = mycol.update_one(
+        {"username": current_user},
+        {"$set": newData}  
+    )
+
+    if update_result.matched_count == 0:
+        return jsonify({"msg": "User not found"}), 404
+
+    return jsonify({"msg": "User updated"}), 201
+
 
 
 def format_dates(dates):
