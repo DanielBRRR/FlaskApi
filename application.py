@@ -19,7 +19,7 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 
-CORS(app)
+CORS(app, supports_credentials=True)
 
 app.config["JWT_SECRET_KEY"] = "misuperclavedeldestinofinal"
 
@@ -598,49 +598,14 @@ def getDateByUser():
     return jsonify(format_dates(list(dates)))
 
 
-@app.route("/date/delete", methods=['POST'])
+from flask_jwt_extended import get_jwt
+
+@app.route("/date/cancel", methods=['POST'])
 @jwt_required()
-def deleteDate():
-    """
-    Cancela (marca como cancelada) una cita
-    ---
-    tags:
-      - Citas
-    security:
-      - Bearer: []
-    parameters:
-      - name: body
-        in: body
-        required: true
-        schema:
-          type: object
-          properties:
-            center:
-              type: string
-            date:
-              type: string
-              example: "25/12/2025 14:00:00"
-          required:
-            - center
-            - date
-    responses:
-      200:
-        description: Cita cancelada exitosamente
-        schema:
-          type: object
-          properties:
-            msg:
-              type: string
-              example: Date deleted successfully
-      400:
-        description: Error en solicitud o cita no encontrada
-        schema:
-          type: object
-          properties:
-            msg:
-              type: string
-    """
+def toggleCancelDate():
     current_user = get_jwt_identity()
+    claims = get_jwt()  # Payload completo, donde está el rol
+
     mydb = myclient["Clinica"]
     mycol = mydb["citas"]
 
@@ -658,15 +623,35 @@ def deleteDate():
     except ValueError:
         return jsonify({"msg": "Invalid date format"}), 400
 
+    # Construir filtro condicional según rol
+    filter_query = {
+        "day": day,
+        "hour": hour,
+        "center": center,
+    }
+
+    # Si no es admin, añadir filtro para solo su usuario
+    if claims.get('role') != 'admin':
+        filter_query["username"] = current_user
+
+    # Buscar la cita actual para saber su estado cancel
+    cita = mycol.find_one(filter_query)
+    if not cita:
+        return jsonify({"msg": "Date not found"}), 400
+
+    nuevo_estado_cancel = 0 if cita.get("cancel", 0) == 1 else 1
+
     result = mycol.update_one(
-        {"username": current_user, "day": day, "hour": hour, "center": center},
-        {"$set": {"cancel": 1}}
+        filter_query,
+        {"$set": {"cancel": nuevo_estado_cancel}}
     )
 
     if result.matched_count == 0:
         return jsonify({"msg": "Date not found"}), 400
 
-    return jsonify({"msg": "Date deleted successfully"}), 200
+    estado_texto = "cancelada" if nuevo_estado_cancel == 1 else "reactivada"
+    return jsonify({"msg": f"Cita {estado_texto} correctamente"}), 200
+
 
 
 
@@ -710,103 +695,106 @@ def getDates():
 
 @app.route("/migracion", methods=['GET'])
 def migracion():
+    try:
+        dblist = myclient.list_database_names()
+        if "Clinica" not in dblist:
+            mydb = myclient["Clinica"]
+            collections = ["usuarios", "centros", "citas"]
+            for collection in collections:
+                mydb.create_collection(collection)
+            
+            # Insertar dos centros de Madrid
+            mydb["centros"].insert_many([
+                {"name": "Centro de Salud Madrid Norte", "address": "Calle de la Salud, 123, Madrid"},
+                {"name": "Centro Médico Madrid Sur", "address": "Avenida de la Medicina, 456, Madrid"}
+            ])
+            
+            # Insertar usuario admin con contraseña cifrada
+            password_plain = "1234"
+            hashed_password = bcrypt.hashpw(password_plain.encode('utf-8'), bcrypt.gensalt())
 
-    dblist = myclient.list_database_names()
-    if "Clinica" not in dblist:
-        mydb = myclient["Clinica"]
-        collections = ["usuarios", "centros", "citas"]
+            admin_user = {
+                "username": "patas",
+                "name": "Santiago",
+                "lastname": "Patiño",
+                "email": "patas@example.com",
+                "phone": "612345678",
+                "date": "1980-01-01",  # mejor formato ISO
+                "role": "admin",
+                "password": hashed_password.decode('utf-8')
+            }
+            mydb["usuarios"].insert_one(admin_user)
 
-        for collection in collections:
-            mydb.create_collection(collection)
+            return jsonify({"msg": "Database, collections and admin user created"}), 200
+        else:
+            return jsonify({"msg": "Database already exists"}), 200
 
-        # Insert two centers related to Madrid
-        mydb["centros"].insert_many([
-            {"name": "Centro de Salud Madrid Norte", "address": "Calle de la Salud, 123, Madrid"},
-            {"name": "Centro Médico Madrid Sur", "address": "Avenida de la Medicina, 456, Madrid"}
-        ])
-
-        return jsonify({"msg": "Database and collections created"}), 200
-    else:
-        return jsonify({"msg": "Database already exists"}), 200
-
-@app.route("/currentUser", methods=["PATCH"])
+    except Exception as e:
+        return jsonify({"msg": str(e)}), 500
+@app.route("/currentUser", methods=["GET", "PATCH"])
 @jwt_required()
-def patchCurrentuser():
-    """
-    Actualizar datos del usuario logeado
-    ---
-    tags:
-        - Perfil
-    parameters:
-        - name: body
-          in: body
-          required: true
-          schema:
-            type: object
-            properties:
-                name:
-                    type: string
-                lastname:
-                    type: string
-                email:
-                    type: string
-                phone:
-                    type: string
-                date:
-                    type: string
-                    format: date
-                    example: "25/12/2025"
-                    description: Fecha de nacimiento en formato DD/MM/YYYY
-    responses:
-        200:
-            description: Usuario creado correctamente
-        400:
-            description: Usuario no existe
-    """
+def currentUser():
     current_user = get_jwt_identity()
     mydb = myclient["Clinica"]
     mycol = mydb["usuarios"]
 
-    name = request.json.get('name', None)
-    lastname = request.json.get('lastname', None)
-    email = request.json.get('email', None)
-    phone = request.json.get('phone', None)
-    date = request.json.get('date', None)
+    if request.method == "GET":
+        user = mycol.find_one({"username": current_user}, {"_id": 0, "password": 0})
+        if user is None:
+            return jsonify({"msg": "User not found"}), 404
+        if 'role' in user:
+            user['role'] = user['role'].lower()
+        return jsonify(user), 200
 
-    newData = {}
+    if request.method == "PATCH":
+        claims = get_jwt()  # claims para rol o permisos
 
-    if name:
-        newData["name"] = name
+        # Campos que pueden llegar
+        name = request.json.get('name')
+        lastname = request.json.get('lastname')
+        email = request.json.get('email')
+        phone = request.json.get('phone')
+        date = request.json.get('date')
+        role = request.json.get('role')
 
-    if lastname:
-        newData["lastname"] = lastname
+        newData = {}
 
-    if email:
-        newData["email"] = email
+        if name is not None:
+            newData["name"] = name
+        if lastname is not None:
+            newData["lastname"] = lastname
+        if email is not None:
+            newData["email"] = email
+        if phone is not None:
+            newData["phone"] = phone
+        if date is not None:
+            try:
+                date_obj = datetime.strptime(date, '%d/%m/%Y')
+                newData["date"] = date_obj.strftime('%d/%m/%Y')
+            except ValueError:
+                return jsonify({"msg": "Invalid date format, debe ser DD/MM/YYYY"}), 400
 
-    if phone:
-        newData["phone"] = phone
+        # Validar rol solo si es admin
+        if role is not None:
+            if claims.get('role', '').lower() == 'admin':
+                newData["role"] = role.lower()
+            else:
+                return jsonify({"msg": "No tienes permisos para cambiar el rol"}), 403
 
-    if date:
-        try:
-            date = datetime.strptime(date, '%d/%m/%Y').strftime('%d/%m/%Y')
-        except ValueError:
-            return jsonify({"msg": "Invalid date format"}), 400
+        update_result = mycol.update_one(
+            {"username": current_user},
+            {"$set": newData}
+        )
 
-        newData["date"] = date
+        if update_result.matched_count == 0:
+            return jsonify({"msg": "User not found"}), 404
 
-    print(current_user)
+        user = mycol.find_one({"username": current_user}, {"_id": 0, "password": 0})
 
-    update_result = mycol.update_one(
-        {"username": current_user},
-        {"$set": newData}  
-    )
+        if 'role' in user:
+            user['role'] = user['role'].lower()
 
-    if update_result.matched_count == 0:
-        return jsonify({"msg": "User not found"}), 404
-
-    return jsonify({"msg": "User updated"}), 201
-
+        return jsonify(user), 200
 
 
 def format_dates(dates):
