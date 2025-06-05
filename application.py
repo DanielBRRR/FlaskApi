@@ -45,6 +45,12 @@ swagger = Swagger(app, template={
 myclient = pymongo.MongoClient("mongodb://localhost:27017/")
 
 
+# ******************************************************************************
+# ENDPOINTS
+# ******************************************************************************
+
+
+
 @app.route('/', methods=['GET'])
 def hello():
     return 'Hello, World!'
@@ -693,6 +699,7 @@ def getDates():
    
     return jsonify(format_dates(list(dates)))
 
+
 @app.route("/migracion", methods=['GET'])
 def migracion():
     try:
@@ -731,6 +738,8 @@ def migracion():
 
     except Exception as e:
         return jsonify({"msg": str(e)}), 500
+
+
 @app.route("/currentUser", methods=["GET", "PATCH"])
 @jwt_required()
 def currentUser():
@@ -796,6 +805,51 @@ def currentUser():
 
         return jsonify(user), 200
 
+# Ruta para listar todos los usuarios (solo nombre de usuario y rol) -------------------------------
+@app.route("/users", methods=["GET"])
+@jwt_required()
+def get_all_users():
+    claims = get_jwt()
+    if claims.get("role", "").lower() != "admin":
+        return jsonify({"msg": "No tienes permisos para ver esta información"}), 403
+
+    mydb = myclient["Clinica"]
+    mycol = mydb["usuarios"]
+    users = list(mycol.find({}, {"_id": 0, "username": 1, "role": 1}))
+
+    # Asegurarse que todos los roles están en minúsculas
+    for user in users:
+        user["role"] = user.get("role", "user").lower()
+
+    return jsonify(users), 200
+
+
+# Ruta para modificar el rol de un usuario (solo admin)---------------------------------------------
+@app.route("/users/<username>/role", methods=["PATCH"])
+@jwt_required()
+def change_user_role(username):
+    claims = get_jwt()
+    if claims.get("role", "").lower() != "admin":
+        return jsonify({"msg": "No tienes permisos para cambiar roles"}), 403
+
+    data = request.get_json()
+    new_role = data.get("role", "").lower()
+
+    if new_role not in ["user", "admin"]:
+        return jsonify({"msg": "Rol inválido. Debe ser 'user' o 'admin'"}), 400
+
+    mydb = myclient["Clinica"]
+    mycol = mydb["usuarios"]
+
+    result = mycol.update_one(
+        {"username": username},
+        {"$set": {"role": new_role}}
+    )
+
+    if result.matched_count == 0:
+        return jsonify({"msg": "Usuario no encontrado"}), 404
+
+    return jsonify({"msg": f"Rol de {username} actualizado a {new_role}"}), 200
 
 def format_dates(dates):
     result = []
